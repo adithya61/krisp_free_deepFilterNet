@@ -52,6 +52,12 @@ if args.list:
     sys.exit(0)
 
 try:
+    import torch
+except ImportError:
+    print("❌  torch not found. Run: pip install torch")
+    sys.exit(1)
+
+try:
     from df.enhance import enhance, init_df, load_audio, save_audio
     from df import config
 except ImportError:
@@ -123,7 +129,7 @@ output_queue = queue.Queue(maxsize=50)  # filtered chunks
 stop_event = threading.Event()
 
 # Stats
-stats = {"processed": 0, "dropped": 0, "last_print": time.time()}
+stats = {"processed": 0, "dropped": 0, "errors": 0, "last_print": time.time()}
 
 def capture_callback(indata, frames, time_info, status):
     """Called by sounddevice on the audio thread. Must be fast — just enqueue."""
@@ -146,17 +152,28 @@ def inference_thread():
         except queue.Empty:
             continue
 
-        # DeepFilterNet expects float32 tensor shaped (1, samples)
+        # DeepFilterNet expects a float32 Tensor shaped (1, samples)
         audio_np = chunk.astype(np.float32)
         audio_2d = audio_np[np.newaxis, :]  # (1, N)
+        audio_tensor = torch.from_numpy(audio_2d)
 
         try:
-            enhanced = enhance(model, df_state, audio_2d, atten_lim_db=args.atten)
-            # enhanced shape: (1, N)
-            output_queue.put_nowait(enhanced[0])
-        except Exception:
+            enhanced = enhance(model, df_state, audio_tensor, atten_lim_db=args.atten)
+            # enhanced is a Tensor of shape (1, N) — back to numpy for the output queue
+            result = enhanced[0].detach().cpu().numpy()
+        except Exception as e:
+            stats["errors"] += 1
+            if stats["errors"] <= 5 or stats["errors"] % 50 == 0:
+                print(f"  ⚠  inference error ({stats['errors']} total): {e}")
             # On error, pass through unfiltered rather than going silent
-            output_queue.put_nowait(audio_np)
+            result = audio_np
+
+        try:
+            output_queue.put_nowait(result)
+        except queue.Full:
+            # Output side is backed up (e.g. playback stalled) — drop this
+            # chunk instead of crashing the thread.
+            stats["dropped"] += 1
 
         stats["processed"] += 1
 
@@ -189,6 +206,7 @@ def print_stats():
         print(
             f"  ✓  processed={stats['processed']}  "
             f"dropped={stats['dropped']}  "
+            f"errors={stats['errors']}  "
             f"queue_in={q_in}  queue_out={q_out}"
         )
 
