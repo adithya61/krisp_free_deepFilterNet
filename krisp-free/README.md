@@ -138,3 +138,12 @@ krisp-free/
 ├── noise_cancel.py   — main script (run this daily)
 └── README.md         — this file
 ```
+
+
+After Debugging :-
+the torch newer version is used in deepFilterNet which has problems and adjustments which are not reflected in the DeepFilterNet yet so to downgrade torch run the above command.
+
+```
+pip install --force-reinstall "torch<2.9" "torchaudio<2.9" deepfilternet
+```
+
